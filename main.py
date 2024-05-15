@@ -8,6 +8,9 @@ from github.Auth import AppAuth
 from parse import analyze_directory
 from change_detection import get_updated_function_list
 from blast_radius_detection import get_paths_from_identifiers
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from flask import Flask, request, jsonify
 
