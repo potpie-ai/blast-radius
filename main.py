@@ -8,10 +8,9 @@ from github.Auth import AppAuth
 from parse import analyze_directory
 from change_detection import get_updated_function_list
 from blast_radius_detection import get_paths_from_identifiers
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
-load_dotenv()
-
+config = dotenv_values(".env")
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -32,14 +31,14 @@ def github_app():
     repository_id = repository["id"]
     repository_name = repository["full_name"]
     # Get the app's private key and app ID from environment variables
-    private_key = os.environ["GITHUB_PRIVATE_KEY"]
+    private_key = config["GITHUB_PRIVATE_KEY"]
     # Read the private key from the environment variable
     private_key = private_key.replace(" ", "\n")
     # Add the necessary header and footer to the private key
     private_key = "-----BEGIN RSA PRIVATE KEY-----\n" + private_key + "\n-----END RSA PRIVATE KEY-----\n"
     # Encode the private key as bytes
     private_key_bytes = private_key
-    app_id = os.environ["GITHUB_APP_ID"]
+    app_id = config["GITHUB_APP_ID"]
 
     installation_id = payload["installation"]["id"]
     
