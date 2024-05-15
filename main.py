@@ -8,15 +8,16 @@ from github.Auth import AppAuth
 from parse import analyze_directory
 from change_detection import get_updated_function_list
 from blast_radius_detection import get_paths_from_identifiers
-import jwt
 
+from flask import Flask, request, jsonify
 
+app = Flask(__name__)
 
-@functions_framework.http
-def github_app(request):
+@app.route('/webhook', methods=['POST'])
+def github_app():
+    # Existing logic here
+    payload = request.json
 
-    # Get the GitHub webhook payload
-    payload = request.get_json()
 
     # Extract relevant information from the payload
     pull_request = payload["pull_request"]
@@ -39,13 +40,12 @@ def github_app(request):
 
     installation_id = payload["installation"]["id"]
     
-
-
+    print(f"{repository_name}::{pull_request_number}\n{payload}")
 
     auth = AppAuth(app_id=app_id, private_key=private_key_bytes).get_installation_auth(installation_id)
     github_instance = Github(auth=auth)
 
-    repo = github_instance.get_repo(payload["repository"]["full_name"])
+    repo = github_instance.get_repo(repository_name)
 
 
     blast_radius = []

@@ -4,16 +4,9 @@ import json
 from typing import Optional
 from simple_graph_sqlite import database as graph
 from tree_sitter import Language, Parser
+import subprocess 
 
-Language.build_library(
-  # Store the library in the `build` directory
-  './build/my-languages.so',
-
-  # Include one or more languages
-  [
-    './build/tree-sitter-python'
-  ]
-)
+subprocess.run(["python", "./build/build.py"])
 
 PY_LANGUAGE = Language('./build/my-languages.so', 'python')
 

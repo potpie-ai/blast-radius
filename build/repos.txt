@@ -1,0 +1,1 @@
+https://github.com/tree-sitter/tree-sitter-python 4bfdd9033a2225cc95032ce77066b7aeca9e2efc
