@@ -145,7 +145,7 @@ class EndpointManager:
                     except sqlite3.IntegrityError:
                         print(f"Duplicate entry for identifier {identifier} skipped.")
                     for dependency in depends:
-                        graph.atomic(codebase_map, graph.connect_nodes(identifier, dependency, {'action': 'calls'}))
+                        graph.atomic(self.db_path, graph.connect_nodes(identifier, dependency, {'action': 'calls'}))
         
         conn.close()
 
