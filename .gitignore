@@ -2,3 +2,7 @@
 __pycache__
 test.py
 .hypothesis
+build/my-languages.so
+.env
+.vscode
+.DS_store

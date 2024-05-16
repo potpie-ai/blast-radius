@@ -9,6 +9,7 @@ from parse import analyze_directory
 from change_detection import get_updated_function_list
 from blast_radius_detection import get_paths_from_identifiers
 from dotenv import dotenv_values
+import tarfile
 
 config = dotenv_values(".env")
 from flask import Flask, request, jsonify
@@ -17,10 +18,14 @@ app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
 def github_app():
+    start_time = time.time()  # Record the start time
     # Existing logic here
+    
     payload = request.json
 
-
+    if payload["action"]=='closed':
+        return []
+    
     # Extract relevant information from the payload
     pull_request = payload["pull_request"]
     pull_request_url = pull_request["url"]
@@ -54,34 +59,23 @@ def github_app():
 # Clone the base branch in a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         # Get the repository contents for the base branch
-        contents = repo.get_contents("", ref=base_branch)
-        temp_dir = os.path.join(temp_dir, f"{repository['name']}")
-        # Create the temporary directory
-        os.makedirs(temp_dir, exist_ok=True)
-        import concurrent.futures
+        # # contents = repo.get_contents("", ref=base_branch)
+        # repo_dir = os.path.join(temp_dir, f"{repository['name']}")
+        # # Create the temporary directory
+        # os.makedirs(repo_dir, exist_ok=True)
 
-        def download_file(content, base_path):
-            if content.type == "file" and content.name.endswith(".py"):
-                file_path = os.path.join(base_path, content.name)
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                with open(file_path, "wb") as file:
-                    file.write(content.decoded_content)
+        # Use the archive link to download the repository as a tarball
+        archive_link = repo.get_archive_link('tarball', base_branch)
 
-        def download_contents(contents, base_path):
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                futures = []
-                for content in contents:
-                    if content.type == "dir":
-                        new_dir_path = os.path.join(base_path, content.name)
-                        os.makedirs(new_dir_path, exist_ok=True)
-                        sub_contents = repo.get_contents(content.path, ref=base_branch)
-                        futures.append(executor.submit(download_contents, sub_contents, new_dir_path))
-                    elif content.type == "file" and content.name.endswith(".py"):
-                        futures.append(executor.submit(download_file, content, base_path))
-                for future in futures:
-                    future.result()
-
-        download_contents(contents, temp_dir)
+        # Download and extract the tarball in the temporary directory
+        response = requests.get(archive_link, stream=True, headers={'Authorization': f'token {auth.token}'})
+        with tarfile.open(fileobj=response.raw, mode='r|gz') as tar:
+            tar.extractall(path=temp_dir)
+            extracted_folder_name = os.listdir(temp_dir)[0]
+            extracted_folder_path = os.path.join(temp_dir, extracted_folder_name)
+            repo_folder_path = os.path.join(temp_dir, repository['name'])
+            temp_dir = repo_folder_path
+            os.rename(extracted_folder_path, repo_folder_path)
         # Create a folder .momentum with write access in the same directory
         momentum_folder = os.path.join(temp_dir, ".momentum")
         os.makedirs(momentum_folder, exist_ok=True)
@@ -107,6 +101,9 @@ def github_app():
 
     # Create a comment on the pull request
     pull_request.create_issue_comment(comment_message)
+    # Calculate the elapsed time
+    elapsed_time = time.time() - start_time
+    print(f"Time taken for processing: {elapsed_time:.2f} seconds")
 
     return "Comment posted successfully"
 
