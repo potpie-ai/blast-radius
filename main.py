@@ -1,28 +1,29 @@
 import os
 import tempfile
 import requests
-from github import Github, GithubIntegration
+from github import Github
 import time
-import functions_framework
 from github.Auth import AppAuth
 from parse import analyze_directory
 from change_detection import get_updated_function_list
 from blast_radius_detection import get_paths_from_identifiers
 from dotenv import dotenv_values
 import tarfile
+from fastapi import FastAPI, Request
+import json
 
 config = dotenv_values(".env")
-from flask import Flask, request, jsonify
 
-app = Flask(__name__)
+app = FastAPI()
 
-@app.route('/webhook', methods=['POST'])
-def github_app():
-    start_time = time.time()  # Record the start time
-    # Existing logic here
+@app.post('/webhook')
+def github_app(request: Request):
     
-    payload = request.json
-
+    start_time = time.time() 
+    
+    payload = request.json()
+    #payload = request.get_json()
+    print(payload)
     if payload["action"]=='closed':
         return []
     
@@ -53,8 +54,7 @@ def github_app():
     github_instance = Github(auth=auth)
 
     repo = github_instance.get_repo(repository_name)
-
-
+ 
     blast_radius = []
 # Clone the base branch in a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:

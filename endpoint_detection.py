@@ -5,6 +5,9 @@ from typing import Optional
 from simple_graph_sqlite import database as graph
 from tree_sitter import Language, Parser
 import subprocess 
+from tree_sitter_languages import get_parser
+from pathlib import Path
+import re
 
 subprocess.run(["python", "./build/build.py"])
 
@@ -54,43 +57,186 @@ class EndpointManager:
             path = '/'
         return path
 
-    # Function to parse a Python file and return FastAPI endpoint functions with additional details
-    def find_fastapi_endpoints(self, source_code, filename):
-        tree = parser.parse(bytes(source_code, "utf8"))
+    def identify_django_endpoints(self, project_path):
+        parser = get_parser("python")
 
         endpoints = []
 
+        # Find all urls.py files in the project
+        urls_files = list(Path(project_path).rglob("urls.py"))
+
+        for urls_file in urls_files:
+            # Read the content of the urls.py file
+            with open(urls_file, "r") as file:
+                content = file.read()
+
+            # Parse the urls.py file using tree-sitter
+            tree = parser.parse(bytes(content, "utf8"))
+            root_node = tree.root_node
+
+            # Initialize urlpatterns list
+            urlpatterns_list = []
+
+            # Find the assignment node for the urlpatterns variable
+            for node in root_node.children:
+                if node.type == "expression_statement" and 'urlpatterns' in content[node.start_byte:node.end_byte]:
+                    expression = node.children[0]
+                    if expression.type == "assignment":
+                        urlpatterns_node = expression.children[2]
+                        if urlpatterns_node.type == "list":
+                            urlpatterns_list.extend(urlpatterns_node.children)
+                    elif expression.type == "augmented_assignment" and 'extend' in content[expression.start_byte:expression.end_byte]:
+                        # Handle the case where urlpatterns is extended
+                        extended_list = expression.children[2]
+                        if extended_list.type == "list":
+                            urlpatterns_list.extend(extended_list.children)
+
+            # Process each URL pattern in urlpatterns_list
+            for url_pattern_node in urlpatterns_list:
+                if url_pattern_node.type == "call":
+                    url_pattern = None
+                    view_name = None
+                    endpoint_name = None
+
+                    # Find the argument list node
+                    argument_list_node = None
+                    for child_node in url_pattern_node.children:
+                        if child_node.type == "argument_list":
+                            argument_list_node = child_node
+                            break
+
+                    if argument_list_node:
+                        # Iterate over the arguments in the argument list
+                        for argument_node in argument_list_node.children:
+                            if argument_node.type == "string":
+                                url_pattern = argument_node.text.decode("utf8").strip("'\"")
+                                if url_pattern == "":
+                                    url_pattern = "/"
+                            elif argument_node.type == "call":
+                                # Find the identifier node inside the call
+                                identifier_node = None
+                                for child_node in argument_node.children:
+                                    if child_node.type == "attribute":
+                                        identifier_node = child_node
+                                        break
+
+                                if identifier_node:
+                                    view_name = identifier_node.text.decode("utf8")
+                            elif argument_node.type == "identifier":
+                                # This handles function-based views directly referred by name
+                                view_name = argument_node.text.decode("utf8")
+                            elif argument_node.type == "attribute":
+                                # This handles function-based views directly referred by name
+                                view_name = argument_node.text.decode("utf8")
+
+                    if url_pattern and view_name:
+                        # Determine the view type (function or class-based)
+                        view = view_name if not view_name.endswith("as_view") else view_name.rsplit(".", 1)[0]
+                        file_path, identifier = self.resolve_called_view_name(view, str(urls_file), self.file_index, self.directory)
+                        if identifier:
+                            entry_point = file_path.replace(self.directory, "") + ":" + identifier
+                            # Append the endpoint information to the list
+                            endpoints.append(("HTTP " + url_pattern, entry_point))
+
+        return endpoints
+    # Function to parse a Python file and return FastAPI endpoint functions with additional details
+    def find_endpoints_from_decorator(self, source_code, filename):
+        parser = get_parser("python")
+        tree = parser.parse(bytes(source_code, "utf8"))
+
+        endpoints = []
         def visit_node(node):
             if node.type == "decorated_definition":
                 for child in node.children:
                     if child.type == "decorator":
-                        decorator_text = source_code[child.start_byte: child.end_byte]
-                        decorators = [".get", ".post", ".put", ".patch", ".delete", ".options", ".head", ".trace",".websocket"]
+                        decorator_text = source_code[child.start_byte : child.end_byte]
+                        decorators = [
+                            ".get",
+                            ".post",
+                            ".put",
+                            ".patch",
+                            ".delete",
+                            ".options",
+                            ".head",
+                            ".trace",
+                            ".websocket",
+                            ".route",
+                        ]
                         if any(decorator in decorator_text for decorator in decorators):
-                            if ".patch." in decorator_text: #hardcoded to handle decorators with 3 levels
+                            if (
+                                ".patch." in decorator_text
+                            ):  # hardcoded to handle decorators with 3 levels
                                 continue
-                            function_name, parameters, start, end, text = self.extract_function_metadata(node)
-                            function_identifier = filename.replace(self.directory,'') + ":" + function_name
-                            endpoint =((decorator_text.split('(')[0]).split('.')[-1]).upper() + " " + self.extract_path(decorator_text)
+                            function_name, parameters, start, end, text = (
+                                self.extract_function_metadata(node)
+                            )
+                            function_identifier = (
+                                filename.replace(self.directory, "")
+                                + ":"
+                                + function_name
+                            )
+                            endpoint = (
+                                ((decorator_text.split("(")[0]).split(".")[-1]).upper()
+                                + " "
+                                + self.extract_path(decorator_text)
+                            )
+                            endpoint_list = [endpoint]
+                            # handle flask endpoint definitions
+                            if (
+                                ".route" in decorator_text
+                                and "methods" in decorator_text
+                            ):
+                                methods_text = (
+                                    decorator_text.split("methods=")[1]
+                                    .split(")")[0]
+                                    .strip()
+                                )
+                                methods_text = methods_text.strip("[").strip("]")
+                                methods = [
+                                    method.strip().replace("'", "").replace('"', "")
+                                    for method in methods_text.split(",")
+                                ]
+                                endpoint_list = [
+                                    endpoint.replace("ROUTE", method.upper())
+                                    for method in methods
+                                ]
+                            elif (
+                                ".route" in decorator_text
+                                and "methods" not in decorator_text
+                            ):
+                                endpoint_list = [endpoint.replace("ROUTE", "GET")]
+                            
                             for grandchild in child.children:
                                 if grandchild.type == "call":
                                     for element in grandchild.children:
-                                        if element.type== "argument_list":
+                                        if element.type == "argument_list":
                                             for kid in element.children:
                                                 if kid.type == "keyword_argument":
-                                                    if kid.children[0].text.decode('utf8') == "response_model":
-                                                        response = kid.children[2].text.decode('utf8')
-                                                        obj = self.get_node(function_identifier)
-                                                        obj['response'] = response
-                                                        self.update_node(function_identifier, obj)
-                            endpoints.append((endpoint, function_identifier))
-                            
+                                                    if (
+                                                        kid.children[0].text.decode(
+                                                            "utf8"
+                                                        )
+                                                        == "response_model"
+                                                    ):
+                                                        response = kid.children[
+                                                            2
+                                                        ].text.decode("utf8")
+                                                        obj = self.get_node(
+                                                            function_identifier
+                                                        )
+                                                        obj["response"] = response
+                                                        self.update_node(
+                                                            function_identifier, obj
+                                                        )
+                            for entrypoint in endpoint_list:
+                                endpoints.append((entrypoint, function_identifier))
 
             for child in node.children:
                 visit_node(child)
 
         visit_node(tree.root_node)
-        return [(decorator,func_name) for decorator, func_name in endpoints]
+        return [(decorator, func_name) for decorator, func_name in endpoints]
+
 
     def get_python_filepaths(self, directory_path):
         python_filepaths = []
@@ -128,24 +274,30 @@ class EndpointManager:
         self.setup_database()
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         cursor = conn.cursor()
+        detected_endpoints = []
+        detected_endpoints = self.identify_django_endpoints(self.directory)
 
         file_paths = self.get_python_filepaths(self.directory)
         for file_path in file_paths:
             with open(file_path, "r", encoding="utf-8") as file:
                 source_code = file.read()
-                detected_endpoints = self.find_fastapi_endpoints(source_code, file_path)
-                for path, identifier in detected_endpoints:
-                    router_info = self.router_prefix_file_mapping.get(identifier.split(":")[0], {})
-                    prefix = router_info.get("prefix", None)
-                    depends = router_info.get("depends", [])
-                    path = self.get_qualified_endpoint_name(path, prefix)
-                    try:
-                        cursor.execute("INSERT INTO endpoints (path, identifier) VALUES (?, ?)", (path, identifier))
-                        conn.commit()
-                    except sqlite3.IntegrityError:
-                        print(f"Duplicate entry for identifier {identifier} skipped.")
-                    for dependency in depends:
-                        graph.atomic(self.db_path, graph.connect_nodes(identifier, dependency, {'action': 'calls'}))
+                decorator_endpoints = self.find_endpoints_from_decorator(
+                    source_code, file_path
+                )
+                if decorator_endpoints:
+                    detected_endpoints.extend(decorator_endpoints)
+        for path, identifier in detected_endpoints:
+            router_info = self.router_prefix_file_mapping.get(identifier.split(":")[0], {})
+            prefix = router_info.get("prefix", None)
+            depends = router_info.get("depends", [])
+            path = self.get_qualified_endpoint_name(path, prefix)
+            try:
+                cursor.execute("INSERT INTO endpoints (path, identifier) VALUES (?, ?)", (path, identifier))
+                conn.commit()
+            except sqlite3.IntegrityError:
+                print(f"Duplicate entry for identifier {identifier} skipped.")
+            for dependency in depends:
+                graph.atomic(self.db_path, graph.connect_nodes(identifier, dependency, {'action': 'calls'}))
         
         conn.close()
 

@@ -95,7 +95,15 @@ def add_node_safe(directory, file_path, function_name, node, parameters, start, 
         graph.atomic(codebase_map, graph.upsert_node(function_identifier, {'file': file_path, 'parameters': parameters, "start": start, "end": end, "code": text, "response": response}))
     except sqlite3.IntegrityError:
         print(f"Node with identifier {function_identifier} already exists. Skipping insert.")
-
+        
+def add_class_node_safe(directory, file_path, class_name, start, end, text):
+    codebase_map = f"{directory}/.momentum/momentum.db"
+    function_identifier = file_path.replace(directory, '') + ":" + class_name
+    try:
+        graph.atomic(codebase_map, graph.upsert_node(function_identifier, {'file': file_path, "start": start, "end": end, "code": text}))
+    except sqlite3.IntegrityError:
+        print(f"Node with identifier {function_identifier} already exists. Skipping insert.")
+        
 def get_node_text(node, source_code):
     start_byte = node.start_byte
     end_byte = node.end_byte
@@ -260,6 +268,7 @@ def map_user_defined_functions(directory, source_code, file_path):
             class_name = node.children[1].text.decode('utf8')  # Assuming the class name is always the second child
             class_context = class_name  # Set the current class context
             class_definition.append(class_name)
+            add_class_node_safe(directory, file_path, class_name, node.start_point, node.end_point, node.text.decode('utf8'))
             class_nodes.append(node)
             for class_child in node.children:
                 if class_child.type == "block":
