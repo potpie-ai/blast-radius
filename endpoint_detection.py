@@ -5,26 +5,28 @@ from typing import Optional
 from simple_graph_sqlite import database as graph
 from tree_sitter import Language, Parser
 import subprocess 
-from tree_sitter_languages import get_parser
+from tree_sitter_languages import get_parser, get_language
 from pathlib import Path
 import re
 
-subprocess.run(["python", "./build/build.py"])
+# subprocess.run(["python", "./build/build.py"])
 
-PY_LANGUAGE = Language('./build/my-languages.so', 'python')
+# PY_LANGUAGE = Language('./build/my-languages.so', 'python')
 
-# Initialize SQLite Database and Graph
-parser = Parser()
-parser.set_language(PY_LANGUAGE)
-
+# # Initialize SQLite Database and Graph
+# parser = Parser()
+# parser.set_language(PY_LANGUAGE)
+parser = get_parser("python")
+PY_LANGUAGE = get_language("python")
 codebase_map = f'./.momentum/momentum.db'
 
 class EndpointManager: 
     
-    def __init__(self, directory: Optional[str] = os.getcwd(), router_prefix_file_mapping: Optional[dict] = {}):
+    def __init__(self, directory: Optional[str] = os.getcwd(), file_index: Optional[dict] = {}, router_prefix_file_mapping: Optional[dict] = {}):
         self.directory = directory
         self.db_path= f'{directory}/.momentum/momentum.db'
         self.router_prefix_file_mapping = router_prefix_file_mapping
+        self.file_index = file_index
 
     # SQLite database setup
     def setup_database(self):
@@ -90,6 +92,15 @@ class EndpointManager:
                         extended_list = expression.children[2]
                         if extended_list.type == "list":
                             urlpatterns_list.extend(extended_list.children)
+                    elif (
+                        expression.type == "call"
+                        and "extend"
+                        in content[expression.start_byte : expression.end_byte]
+                    ):
+                        # Handle the case where urlpatterns is extended
+                        extended_list = expression.children[1].children[1]
+                        if extended_list.type == "list":
+                            urlpatterns_list.extend(extended_list.children)
 
             # Process each URL pattern in urlpatterns_list
             for url_pattern_node in urlpatterns_list:
@@ -137,6 +148,90 @@ class EndpointManager:
                             entry_point = file_path.replace(self.directory, "") + ":" + identifier
                             # Append the endpoint information to the list
                             endpoints.append(("HTTP " + url_pattern, entry_point))
+                            node = self.get_node(entry_point)
+                            if node:
+                                generic_django_views = [
+                                    "RedirectView",
+                                    "TemplateView",
+                                    "View",
+                                    "ArchiveIndexView",
+                                    "DateDetailView",
+                                    "DayArchiveView",
+                                    "MonthArchiveView",
+                                    "TodayArchiveView",
+                                    "WeekArchiveView",
+                                    "YearArchiveView",
+                                    "DetailView",
+                                    "CreateView",
+                                    "DeleteView",
+                                    "FormView",
+                                    "UpdateView",
+                                    "RedirectView",
+                                    "ListView"
+                                ]
+                                for view in generic_django_views:
+                                    if view in node["code"]:
+                                        model_match = re.search(
+                                            r"model\s*=\s*(\w+)", node["code"]
+                                        )
+                                        if model_match:
+                                            model_value = model_match.group(1)
+                                            model_file, model_name = (
+                                                self.resolve_called_view_name(
+                                                    model_value,
+                                                    file_path,
+                                                    self.file_index,
+                                                    self.directory,
+                                                
+                                                )
+                                            )
+                                            if model_name:
+                                                model_identifier = (
+                                                    model_file.replace(
+                                                        self.directory, ""
+                                                    )
+                                                    + ":"
+                                                    + model_name
+                                                )
+                                                graph.atomic(
+                                                    self.db_path,
+                                                    graph.connect_nodes(
+                                                        entry_point,
+                                                        model_identifier,
+                                                        {"action": "calls"},
+                                                    ),
+                                                )
+                                    
+                                        form_match = re.search(
+                                            r"form_class\s*=\s*(\w+)", node["code"]
+                                        )
+                                        if form_match:
+                                            form_value = form_match.group(1)
+                                            form_file, form_name = (
+                                                self.resolve_called_view_name(
+                                                    form_value,
+                                                    file_path,
+                                                    self.file_index,
+                                                    self.directory,
+                                                    
+                                                )
+                                            )
+                                            if form_name:
+                                                form_identifier = (
+                                                    form_file.replace(
+                                                        self.directory, ""
+                                                    )
+                                                    + ":"
+                                                    + form_name
+                                                )
+                                                graph.atomic(
+                                                    self.db_path,
+                                                    graph.connect_nodes(
+                                                        entry_point,
+                                                        form_identifier,
+                                                        {"action": "calls"},
+                                                    ),
+                                                )
 
         return endpoints
     # Function to parse a Python file and return FastAPI endpoint functions with additional details
@@ -425,4 +520,151 @@ class EndpointManager:
     def update_node(self, function_identifier, body):
         codebase_map = f'{self.directory}/.momentum/momentum.db'
         return graph.atomic(codebase_map, graph.upsert_node(function_identifier, body))
+    
+    def find_py_files_with_substring(self, dir_path, substring):
+        for root, dirs, files in os.walk(dir_path):
+            for file in files:
+                path = os.path.join(root, file)
+                if (
+                    substring in path
+                    and file.endswith(".py")
+                    and not file.startswith("test")
+                ):
+                    yield os.path.join(root, file)
+                    
+    def resolve_called_view_name(self, name, file_path, file_index, directory):
+        # handle DEPENDS later
+        if len(name.split(".")) >= 2:
+            base = name.split(".")[0]
+
+            function = ".".join(name.split(".")[1:])
+        elif "." not in name:
+            function = name
+            base = name
+        else:
+            return file_path, None
+        if base in file_index[file_path]["class_instances"].keys():
+            class_context = file_index[file_path]["class_instances"][base]
+            if class_context in file_index[file_path]["class_definition"]:
+                return file_path, class_context
+            module_value = None
+            for import_entry in file_index[file_path]["imports"]:
+                if import_entry.get("alias") == class_context:
+                    module_value = import_entry.get("module")
+                    break
+                elif class_context in import_entry.get("module"):
+                    module_value = import_entry.get("module")
+                    break
+            if module_value:
+                if module_value.startswith("."):
+                    num_up_dirs = len(module_value) - len(
+                        module_value.lstrip(".")
+                    )  # Count the number of leading dots to determine relative depth
+                    file_path_parts = file_path.split("/")[:-1]  # Remove the filename
+                    # Use the last num_up_dirs elements from file_path_parts if num_up_dirs is not more than the length of file_path_parts
+                    base_path_parts = (
+                        file_path_parts[-num_up_dirs:]
+                        if num_up_dirs <= len(file_path_parts)
+                        else []
+                    )
+                    module_parts = module_value.lstrip(".").split(
+                        "."
+                    )  # Remove leading dots and split
+                    potential_module = "/".join(
+                        base_path_parts + module_parts[:-1]
+                    )  # Combine the paths
+                else:
+                    module_parts = module_value.split(".")
+                    potential_module = (
+                        "/".join(module_parts[:-1]) if len(module_parts) > 1 else ""
+                    )
+                potential_class_or_instance = module_parts[-1]
+
+                candidate_files = list(
+                    self.find_py_files_with_substring(directory, potential_module)
+                )
+                for candidate_file in candidate_files:
+                    candidate_path = os.path.join(directory, candidate_file)
+                    if candidate_path in file_index:
+                        # Check if it's a class definition
+                        if (
+                            potential_class_or_instance
+                            in file_index[candidate_path]["class_definition"]
+                        ):
+                            return candidate_path, potential_class_or_instance
+                        # Check if it's a class instance
+                        elif (
+                            potential_class_or_instance
+                            in file_index[candidate_path]["class_instances"].keys()
+                        ):
+                            return (
+                                candidate_path,
+                                file_index[candidate_path]["class_instances"][
+                                    potential_class_or_instance
+                                ],
+                            )
+            # TODO DEDUP   # If no class or instance match, return with the function appended
+        module_value = None
+        for import_entry in file_index[file_path]["imports"]:
+            if import_entry.get("alias") == base:
+                module_value = import_entry.get("module")
+                break
+            elif base in import_entry.get("module"):
+                module_value = import_entry.get("module")
+                break
+        if module_value:
+            if module_value.startswith("."):
+                num_up_dirs = len(module_value) - len(
+                    module_value.lstrip(".")
+                )  # Count the number of leading dots to determine relative depth
+                file_path_parts = file_path.split("/")[:-1]  # Remove the filename
+                # Use the last num_up_dirs elements from file_path_parts if num_up_dirs is not more than the length of file_path_parts
+                base_path_parts = (
+                    file_path_parts[-num_up_dirs:]
+                    if num_up_dirs <= len(file_path_parts)
+                    else []
+                )
+                module_parts = module_value.lstrip(".").split(
+                    "."
+                )  # Remove leading dots and split
+                potential_module = "/".join(
+                    base_path_parts + module_parts[:-1]
+                )  # Combine the paths
+            else:
+                module_parts = module_value.split(".")
+                potential_module = (
+                    "/".join(module_parts[:-1]) if len(module_parts) > 1 else ""
+                )
+            potential_class_or_instance = function
+
+            candidate_files = list(
+                self.find_py_files_with_substring(directory, potential_module)
+            )
+            for candidate_file in candidate_files:
+                candidate_path = os.path.join(directory, candidate_file)
+                if candidate_path in file_index:
+                    # Check if it's a class definition
+                    if (
+                        potential_class_or_instance
+                        in file_index[candidate_path]["class_definition"]
+                    ):
+                        return candidate_path, potential_class_or_instance
+                    # Check if it's a class instance
+                    elif (
+                        potential_class_or_instance
+                        in file_index[candidate_path]["class_instances"].keys()
+                    ):
+                        return (
+                            candidate_path,
+                            file_index[candidate_path]["class_instances"][
+                                potential_class_or_instance
+                            ],
+                        )
+                    elif potential_class_or_instance in [
+                        key.split(":")[-1]
+                        for key in file_index[candidate_path]["functions"].keys()
+                    ]:
+                        return candidate_path, potential_class_or_instance
+            # If no class or instance match, return with the function appended
+        return file_path, None
 

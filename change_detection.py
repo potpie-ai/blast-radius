@@ -1,16 +1,19 @@
 import subprocess
 import os
 from itertools import islice
-from tree_sitter import Language, Parser
-# Load Python grammar for Tree-sittefrom tree_sitter import Language, Parser
+# from tree_sitter import Language, Parser
+# # Load Python grammar for Tree-sittefrom tree_sitter import Language, Parser
 
 
-PY_LANGUAGE = Language('./build/my-languages.so', 'python')
+# PY_LANGUAGE = Language('./build/my-languages.so', 'python')
 
-# Initialize SQLite Database and Graph
-parser = Parser()
-parser.set_language(PY_LANGUAGE)
+# # Initialize SQLite Database and Graph
+# parser = Parser()
+# parser.set_language(PY_LANGUAGE)
 
+from tree_sitter_languages import get_parser, get_language
+parser = get_parser("python")
+PY_LANGUAGE = get_language("python")
 
 def _get_git_diff_detail(base_branch, head_branch, repo, pull):
     """Fetch detailed diff information, focusing on changed lines."""
@@ -42,39 +45,40 @@ def _parse_diff_detail(diff_detail, repo_path):
 
 
 
-def _parse_functions_from_file(file_path):
-    """Parse a file and build a map of function names to their line ranges."""
+def _parse_functions_and_classes_from_file(file_path):
+    """Parse a file and build a map of function and class names to their line ranges."""
     with open(file_path, 'rb') as file:
         content = file.read()
     tree = parser.parse(content)
     root_node = tree.root_node
-    functions = {}
+    functions_and_classes = {}
 
-    def extract_functions(node, class_name=None):
+    def extract_functions_and_classes(node, class_name=None):
         if node.type == 'function_definition':
             function_name = next((child for child in node.children if child.type == 'identifier'), None)
             if function_name:
                 function_name = function_name.text.decode('utf-8')
                 full_name = f"{class_name}:{function_name}" if class_name else function_name
-                functions[full_name] = (node.start_point[0] + 1, node.end_point[0] + 1)
+                functions_and_classes[full_name] = (node.start_point[0] + 1, node.end_point[0] + 1)
         elif node.type == 'class_definition':
             class_name = next((child for child in node.children if child.type == 'identifier'), None)
             if class_name:
                 class_name = class_name.text.decode('utf-8')
+                functions_and_classes[class_name] = (node.start_point[0] + 1, node.end_point[0] + 1)
                 for child in node.children:
-                    extract_functions(child, class_name)
+                    extract_functions_and_classes(child, class_name)
         else:
             for child in node.children:
-                extract_functions(child, class_name)
+                extract_functions_and_classes(child, class_name)
 
-    extract_functions(root_node)
-    return functions
+    extract_functions_and_classes(root_node)
+    return functions_and_classes
 
 def _find_changed_functions(changed_files, repo_path):
     result = []
     for file_path, lines in changed_files.items():
         try:
-            functions = _parse_functions_from_file(file_path)
+            functions = _parse_functions_and_classes_from_file(file_path)
             for full_name, (start_line, end_line) in functions.items():
                 if any(start_line <= line <= end_line for line in lines):
                     internal_path = os.path.relpath(file_path, start=repo_path)

@@ -3,14 +3,15 @@ import json
 import sqlite3
 from endpoint_detection import EndpointManager
 from typing import Optional
-from tree_sitter import Language, Parser
+# from tree_sitter import Language, Parser
+from tree_sitter_languages import get_parser, get_language
+parser = get_parser("python")
+PY_LANGUAGE = get_language("python")
+# PY_LANGUAGE = Language('./build/my-languages.so', 'python')
 
-
-PY_LANGUAGE = Language('./build/my-languages.so', 'python')
-
-# Initialize SQLite Database and Graph
-parser = Parser()
-parser.set_language(PY_LANGUAGE)
+# # Initialize SQLite Database and Graph
+# parser = Parser()
+# parser.set_language(PY_LANGUAGE)
 
 from simple_graph_sqlite import database as graph
 
@@ -570,5 +571,5 @@ def analyze_directory(directory):
 
 
 
-    EndpointManager(directory, router_metadata_file_mapping).analyse_endpoints()
+    EndpointManager(directory, file_index,router_metadata_file_mapping).analyse_endpoints()
 
